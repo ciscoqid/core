@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from datetime import timedelta
+
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
@@ -12,6 +14,11 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+
+from homeassistant.util import dt as dt_util
+
+# Define how long a battery notification should remain "Active" in HA
+BATTERY_STALE_CUTOFF = timedelta(days=14)
 
 from .const import (
     FLUME_TYPE_BRIDGE,
@@ -126,16 +133,30 @@ class FlumeNotificationBinarySensor(
 
     @property
     def is_on(self) -> bool:
-        """Return on state."""
-        return bool(
-            (
-                notifications := self.coordinator.active_notifications_by_device.get(
-                    self.device_id
-                )
-            )
-            and self.entity_description.event_rule in notifications
-        )
+        """Return on state with expiration logic for battery."""
+        notifications = self.coordinator.active_notifications_by_device.get(self.device_id)
 
+        if not notifications:
+            return False
+
+        # Check if this specific entity's rule is in the active notifications
+        if self.entity_description.event_rule not in notifications:
+            return False
+
+        # If it's a Low Battery sensor, check the age of the notification
+        if self.entity_description.event_rule == "Low Battery":
+            # The coordinator stores the notification object (which includes 'created_datetime')
+            notification_data = notifications["Low Battery"]
+            timestamp_str = notification_data.get("created_datetime")
+
+            if timestamp_str:
+                notification_time = dt_util.parse_datetime(timestamp_str)
+                if notification_time:
+                    # Return True only if the notification is recent
+                    return notification_time > (dt_util.now() - BATTERY_STALE_CUTOFF)
+
+        # For all other notification types (Leaks, etc.), maintain original behavior
+        return True
 
 class FlumeConnectionBinarySensor(
     FlumeEntity[FlumeDeviceConnectionUpdateCoordinator], BinarySensorEntity
